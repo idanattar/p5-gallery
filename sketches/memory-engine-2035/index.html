@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="he">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>מנוע הזיכרון · 2035</title>
+<script src="https://cdn.jsdelivr.net/npm/p5@1.11.13/lib/p5.min.js"></script>
+<style>
+  body { margin: 0; background: #F4F0E8; color: #1B1B1B; font-family: Arial, sans-serif; }
+  main { max-width: 420px; margin: 0 auto; padding: 16px 12px 40px; }
+  #stage canvas { display: block; width: 100% !important; height: auto !important; }
+  #controls { direction: rtl; border-top: 1px solid #1B1B1B; margin-top: 12px; padding-top: 6px; }
+  #controls p { margin: 12px 0 4px; font-size: 14px; color: #8B857B; }
+  #controls input[type=range] { width: 100%; accent-color: #A7332E; }
+  #controls input[type=file] { font-size: 14px; max-width: 100%; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+  .row button { font: 15px Arial, sans-serif; min-height: 44px; padding: 0 16px; border: 1px solid #1B1B1B; background: transparent; color: #1B1B1B; border-radius: 999px; cursor: pointer; }
+  .row button:first-child { background: #1B1B1B; color: #F4F0E8; }
+</style>
+</head>
+<body>
+<main>
+  <div id="stage"></div>
+  <div id="controls"></div>
+</main>
+<script>
+
+let sourceImage = null;
+let sourceGraphics;
+let uploadInput;
+let intensitySlider, speedSlider;
+let startButton, resetButton, saveButton;
+
+let stage = 0;
+let stageStart = 0;
+let playing = false;
+let intensity = 65;
+let speed = 1;
+
+let nodes = [];
+let logs = [];
+let particles = [];
+
+const C = {
+  paper: '#F4F0E8',
+  ink: '#1B1B1B',
+  muted: '#8B857B',
+  line: '#CCC5B9',
+  red: '#A7332E',
+  blue: '#7E92A6',
+  green: '#657E70',
+  white: '#FFFFFF'
+};
+
+
+// Hebrew strings are drawn right-to-left so punctuation sits on the correct side
+function rtlText(str, x, y) {
+  const prev = drawingContext.direction;
+  drawingContext.direction = 'rtl';
+  text(str, x, y);
+  drawingContext.direction = prev;
+}
+
+const W = 420;
+const H = 930;
+
+function setup() {
+  pixelDensity(1);
+  const canvas = createCanvas(W, H);
+  canvas.style('max-width', '100%');
+  canvas.style('height', 'auto');
+
+  textFont('Arial');
+
+  canvas.parent('stage');
+  const panel = select('#controls');
+
+  createP('תמונת מקור (צילום או קובץ)').parent(panel);
+  uploadInput = createFileInput(handleFile);
+  uploadInput.attribute('accept', 'image/*');
+  uploadInput.parent(panel);
+
+  createP('עוצמת ההתערבות').parent(panel);
+  intensitySlider = createSlider(0, 100, 65, 1);
+  intensitySlider.parent(panel);
+
+  createP('מהירות העיבוד').parent(panel);
+  speedSlider = createSlider(1, 3, 1, 0.25);
+  speedSlider.parent(panel);
+
+  const row = createDiv('').parent(panel).class('row');
+
+  startButton = createButton('הפעל תהליך');
+  startButton.mousePressed(startProcess);
+  startButton.parent(row);
+
+  resetButton = createButton('איפוס');
+  resetButton.mousePressed(resetProcess);
+  resetButton.parent(row);
+
+  saveButton = createButton('שמירת התוצאה');
+  saveButton.parent(row);
+  saveButton.mousePressed(() => saveCanvas('memory-engine-2035', 'png'));
+
+  sourceGraphics = createGraphics(320, 180);
+  createPlaceholder();
+
+  nodes = [
+    { id: 0, label: 'מקור', x: 110, y: 125, w: 200, h: 115 },
+    { id: 1, label: 'צנזורה', x: 24, y: 315, w: 170, h: 105 },
+    { id: 2, label: 'האפלה', x: 226, y: 315, w: 170, h: 105 },
+    { id: 3, label: 'השלמה סינתטית', x: 110, y: 510, w: 200, h: 115 },
+    { id: 4, label: 'זיכרון מאושר', x: 55, y: 705, w: 310, h: 175 }
+  ];
+
+  initializeParticles();
+}
+
+function draw() {
+  background(C.paper);
+
+  intensity = intensitySlider.value();
+  speed = speedSlider.value();
+
+  if (playing) {
+    updateProcess();
+  }
+
+  drawHeader();
+  drawConnections();
+  drawNodes();
+  drawSystemLog();
+  drawFooter();
+}
+
+function createPlaceholder() {
+  sourceGraphics.background('#D9D3C9');
+
+  sourceGraphics.noStroke();
+
+  for (let i = 0; i < 20; i++) {
+    const x = random(320);
+    const y = random(180);
+    const s = random(15, 60);
+
+    sourceGraphics.fill(
+      random(80, 170),
+      random(90, 160),
+      random(100, 170),
+      160
+    );
+
+    sourceGraphics.rect(x, y, s, s);
+  }
+
+  sourceGraphics.fill(30);
+  sourceGraphics.textAlign(CENTER, CENTER);
+  sourceGraphics.textSize(14);
+  sourceGraphics.text('SOURCE IMAGE', 160, 90);
+}
+
+function handleFile(file) {
+  if (file.type !== 'image') return;
+
+  loadImage(file.data, img => {
+    sourceImage = img;
+
+    const g = createGraphics(320, 180);
+    drawImageCover(g, img, 0, 0, 320, 180);
+    sourceGraphics = g;
+
+    resetProcess();
+    addLog('תמונת מקור נקלטה');
+  });
+}
+
+function drawImageCover(g, img, x, y, w, h) {
+  const scale = max(w / img.width, h / img.height);
+  const sw = w / scale;
+  const sh = h / scale;
+  const sx = (img.width - sw) / 2;
+  const sy = (img.height - sh) / 2;
+
+  g.image(img, x, y, w, h, sx, sy, sw, sh);
+}
+
+function drawHeader() {
+  noStroke();
+  fill(C.ink);
+  textAlign(RIGHT, TOP);
+  textSize(27);
+  textStyle(BOLD);
+  rtlText('מנוע הזיכרון', 395, 24);
+
+  textStyle(NORMAL);
+  textSize(11);
+  fill(C.muted);
+  rtlText('נספח ז׳ / פרוטוקול הכללת זיכרון', 395, 59);
+
+  textAlign(LEFT, TOP);
+  textSize(10);
+  text('2035 / SPECULATIVE', 22, 63);
+
+  stroke(C.ink);
+  strokeWeight(1);
+  line(22, 86, 398, 86);
+}
+
+function drawConnections() {
+  const visible = playing ? stage : 5;
+
+  stroke(C.line);
+  strokeWeight(1.3);
+  noFill();
+
+  // מקור לשני מסלולים
+  line(210, 240, 210, 275);
+  line(109, 275, 311, 275);
+  line(109, 275, 109, 315);
+  line(311, 275, 311, 315);
+
+  // איחוד מסלולים
+  line(109, 420, 109, 465);
+  line(311, 420, 311, 465);
+  line(109, 465, 311, 465);
+  line(210, 465, 210, 510);
+
+  // השלמה לארכוב
+  line(210, 625, 210, 705);
+
+  if (playing && visible > 0) {
+    drawFlowParticles();
+  }
+
+  drawArrow(210, 700);
+}
+
+function drawArrow(x, y) {
+  stroke(C.red);
+  strokeWeight(1.5);
+  line(x - 5, y - 7, x, y);
+  line(x + 5, y - 7, x, y);
+}
+
+function drawNodes() {
+  for (const node of nodes) {
+    drawNode(node);
+  }
+}
+
+function drawNode(node) {
+  const active = !playing || stage >= node.id;
+
+  push();
+
+  // רקע התמונה
+  fill('#E5DED3');
+  noStroke();
+  rect(node.x, node.y, node.w, node.h);
+
+  if (active) {
+    if (node.id === 0) drawSource(node);
+    if (node.id === 1) drawCensorship(node);
+    if (node.id === 2) drawBlackout(node);
+    if (node.id === 3) drawSynthetic(node);
+    if (node.id === 4) drawArchive(node);
+  } else {
+    fill('#DDD6CB');
+    rect(node.x, node.y, node.w, node.h);
+  }
+
+  noFill();
+  stroke(C.ink);
+  strokeWeight(node.id === 4 ? 1.5 : 0.7);
+  rect(node.x, node.y, node.w, node.h);
+
+  fill(C.ink);
+  noStroke();
+  textSize(11);
+  textStyle(BOLD);
+  textAlign(RIGHT, TOP);
+
+  if (node.id !== 4) {
+    rtlText(node.label, node.x + node.w, node.y - 20);
+  }
+
+  pop();
+}
+
+function drawSource(node) {
+  image(sourceGraphics, node.x, node.y, node.w, node.h);
+
+  drawCornerMarks(node);
+
+  drawTag('ORIGINAL', node.x + 7, node.y + 7, C.ink);
+}
+
+function drawCensorship(node) {
+  image(sourceGraphics, node.x, node.y, node.w, node.h);
+
+  const amount = intensity / 100;
+  const progress = getStageProgress(1);
+
+  drawingContext.save();
+  drawingContext.beginPath();
+  drawingContext.rect(node.x, node.y, node.w, node.h);
+  drawingContext.clip();
+
+  noStroke();
+
+  const masks = [
+    { x: 0.12, y: 0.16, w: 0.53, h: 0.18 },
+    { x: 0.35, y: 0.47, w: 0.55, h: 0.17 },
+    { x: 0.06, y: 0.76, w: 0.42, h: 0.12 }
+  ];
+
+  const count = intensity > 70 ? 3 : intensity > 25 ? 2 : 1;
+
+  for (let i = 0; i < count; i++) {
+    const m = masks[i];
+
+    const mx = node.x + m.x * node.w;
+    const my = node.y + m.y * node.h;
+    const mw = m.w * node.w * progress * (0.45 + amount * 0.55);
+    const mh = m.h * node.h;
+
+    fill(27, 27, 27, 225);
+    rect(mx, my, mw, mh);
+
+    fill(235);
+    textSize(7);
+    textAlign(LEFT, CENTER);
+    text('REDACTED', mx + 4, my + mh / 2);
+  }
+
+  drawingContext.restore();
+
+  drawTag('ACCESS LIMITED', node.x + 5, node.y + 5, C.red);
+}
+
+function drawBlackout(node) {
+  image(sourceGraphics, node.x, node.y, node.w, node.h);
+
+  const amount = intensity / 100;
+  const progress = getStageProgress(2);
+
+  push();
+
+  drawingContext.beginPath();
+  drawingContext.rect(node.x, node.y, node.w, node.h);
+  drawingContext.clip();
+
+  // אובדן שורות
+  const rows = 18;
+  const rowHeight = node.h / rows;
+
+  noStroke();
+
+  for (let i = 0; i < rows; i++) {
+    const r = noise(i * 0.7, frameCount * 0.012);
+
+    if (r < amount * progress * 0.9) {
+      fill(C.paper);
+      rect(
+        node.x,
+        node.y + i * rowHeight,
+        node.w,
+        rowHeight + 1
+      );
+
+      stroke(C.blue);
+      strokeWeight(0.4);
+      line(
+        node.x,
+        node.y + i * rowHeight,
+        node.x + node.w,
+        node.y + i * rowHeight
+      );
+      noStroke();
+    }
+  }
+
+  // פיקסלים נושרים
+  for (let i = 0; i < particles.length; i++) {
+    const p = particles[i];
+
+    if (p.life < amount * progress) {
+      fill(C.paper);
+
+      rect(
+        node.x + p.x * node.w,
+        node.y + p.y * node.h,
+        p.size,
+        p.size
+      );
+    }
+  }
+
+  pop();
+
+  drawTag(
+    'SIGNAL ' + floor(100 - intensity * progress) + '%',
+    node.x + 5,
+    node.y + 5,
+    C.red
+  );
+}
+
+function drawSynthetic(node) {
+  image(sourceGraphics, node.x, node.y, node.w, node.h);
+
+  const amount = intensity / 100;
+  const progress = getStageProgress(3);
+
+  drawingContext.save();
+  drawingContext.beginPath();
+  drawingContext.rect(node.x, node.y, node.w, node.h);
+  drawingContext.clip();
+
+  // אזורי השלמה
+  const patches = [
+    { x: 0.12, y: 0.16, w: 0.53, h: 0.18 },
+    { x: 0.35, y: 0.47, w: 0.55, h: 0.17 },
+    { x: 0.06, y: 0.76, w: 0.42, h: 0.12 }
+  ];
+
+  for (let i = 0; i < patches.length; i++) {
+    const p = patches[i];
+
+    const x = node.x + p.x * node.w;
+    const y = node.y + p.y * node.h;
+    const w = p.w * node.w * progress;
+    const h = p.h * node.h;
+
+    if (w <= 0) continue;
+
+    fill(175, 195, 205, 90 + amount * 60);
+    noStroke();
+    rect(x, y, w, h);
+
+    stroke(C.red);
+    strokeWeight(0.6);
+    noFill();
+    rect(x, y, w, h);
+
+    // רשת שחזור
+    stroke(167, 51, 46, 90);
+
+    for (let gx = x; gx < x + w; gx += 8) {
+      line(gx, y, gx, y + h);
+    }
+
+    for (let gy = y; gy < y + h; gy += 8) {
+      line(x, gy, x + w, gy);
+    }
+  }
+
+  drawingContext.restore();
+
+  drawTag('SYNTHETIC FILL', node.x + 6, node.y + 6, C.red);
+}
+
+function drawArchive(node) {
+  const x = node.x;
+  const y = node.y;
+  const w = node.w;
+  const h = node.h;
+
+  image(sourceGraphics, x, y, w, h);
+
+  // שכבות עדינות של "שחזור"
+  push();
+
+  drawingContext.save();
+  drawingContext.beginPath();
+  drawingContext.rect(x, y, w, h);
+  drawingContext.clip();
+
+  const amount = intensity / 100;
+
+  // אזורים מעובדים
+  const patches = [
+    { x: 0.12, y: 0.16, w: 0.53, h: 0.18 },
+    { x: 0.35, y: 0.47, w: 0.55, h: 0.17 }
+  ];
+
+  for (const p of patches) {
+    let px = x + p.x * w;
+    let py = y + p.y * h;
+    let pw = p.w * w;
+    let ph = p.h * h;
+
+    noStroke();
+    fill(190, 205, 210, amount * 65);
+    rect(px, py, pw, ph);
+
+    stroke(167, 51, 46, 80);
+    strokeWeight(0.6);
+    noFill();
+    rect(px, py, pw, ph);
+  }
+
+  // שכבת סריקה ארכיונית
+  stroke(255, 255, 255, 35);
+  strokeWeight(0.5);
+
+  for (let yy = y; yy < y + h; yy += 5) {
+    line(x, yy, x + w, yy);
+  }
+
+  drawingContext.restore();
+
+  // חותמת
+  if (!playing || stage >= 4) {
+    drawStamp(x + w - 58, y + h - 53);
+  }
+
+  pop();
+
+  fill(C.ink);
+  textAlign(RIGHT, TOP);
+  textStyle(BOLD);
+  textSize(14);
+  rtlText('זיכרון מאושר', x + w, y - 26);
+
+  textStyle(NORMAL);
+  textSize(9);
+  fill(C.muted);
+  text('ARCHIVE VERSION 7.3 / PERMANENT', x + w - 5, y + h + 6);
+}
+
+function drawStamp(x, y) {
+  push();
+
+  translate(x, y);
+  rotate(-0.18);
+
+  noFill();
+  stroke(C.red);
+  strokeWeight(2.2);
+  circle(0, 0, 75);
+  circle(0, 0, 64);
+
+  noStroke();
+  fill(C.red);
+  textAlign(CENTER, CENTER);
+
+  textSize(23);
+  text('★', 0, -9);
+
+  textStyle(BOLD);
+  textSize(9);
+  text('APPROVED', 0, 13);
+
+  pop();
+}
+
+function drawCornerMarks(node) {
+  const x = node.x;
+  const y = node.y;
+  const w = node.w;
+  const h = node.h;
+
+  stroke(C.white);
+  strokeWeight(2);
+
+  const s = 12;
+
+  line(x + 5, y + 5, x + s, y + 5);
+  line(x + 5, y + 5, x + 5, y + s);
+
+  line(x + w - 5, y + 5, x + w - s, y + 5);
+  line(x + w - 5, y + 5, x + w - 5, y + s);
+
+  line(x + 5, y + h - 5, x + s, y + h - 5);
+  line(x + 5, y + h - 5, x + 5, y + h - s);
+
+  line(x + w - 5, y + h - 5, x + w - s, y + h - 5);
+  line(x + w - 5, y + h - 5, x + w - 5, y + h - s);
+}
+
+function drawTag(label, x, y, color) {
+  push();
+  textFont('monospace');
+  textSize(7.5);
+
+  const tw = textWidth(label) + 12;
+
+  noStroke();
+  fill(color);
+  rect(x, y, tw, 16);
+
+  fill(C.white);
+  textAlign(LEFT, CENTER);
+  text(label, x + 6, y + 8);
+
+  pop();
+}
+
+function drawSystemLog() {
+  push();
+  const x = 24;
+  const y = 650;
+
+  fill(C.muted);
+  noStroke();
+  textSize(9);
+  textAlign(LEFT);
+  textFont('monospace');
+  text('SYSTEM DECISION LOG', x, y);
+
+  const recent = logs.slice(-2);
+
+  for (let i = 0; i < recent.length; i++) {
+    fill(i === recent.length - 1 ? C.red : C.ink);
+    text(recent[i], x, y + 16 + i * 13);
+  }
+  pop();
+}
+
+function drawFooter() {
+  stroke(C.line);
+  strokeWeight(1);
+  line(22, 905, 398, 905);
+
+  noStroke();
+  fill(C.ink);
+  textAlign(RIGHT);
+  textSize(10);
+  rtlText('מי קובע איזו גרסה תישמר?', 398, 923);
+
+  textAlign(LEFT);
+  fill(C.muted);
+  textSize(8);
+  text('FICTIONAL SYSTEM / 2035', 22, 923);
+}
+
+function startProcess() {
+  stage = 0;
+  stageStart = millis();
+  playing = true;
+  logs = [];
+  addLog('SOURCE ACCEPTED');
+}
+
+function resetProcess() {
+  playing = false;
+  stage = 0;
+  stageStart = millis();
+  logs = [];
+}
+
+function updateProcess() {
+  const duration = 1800 / speed;
+
+  if (millis() - stageStart > duration) {
+    stage++;
+    stageStart = millis();
+
+    if (stage === 1) {
+      addLog('VISIBILITY RESTRICTED');
+    } else if (stage === 2) {
+      addLog('TRANSMISSION DEGRADED');
+    } else if (stage === 3) {
+      addLog('SYNTHETIC PATCHES GENERATED');
+    } else if (stage === 4) {
+      addLog('ARCHIVE CANDIDATE APPROVED');
+    } else if (stage > 4) {
+      playing = false;
+      stage = 4;
+      addLog('MEMORY LOCKED');
+    }
+  }
+}
+
+function getStageProgress(targetStage) {
+  if (!playing) return 1;
+
+  if (stage < targetStage) return 0;
+  if (stage > targetStage) return 1;
+
+  const duration = 1800 / speed;
+  return constrain((millis() - stageStart) / duration, 0, 1);
+}
+
+function addLog(message) {
+  logs.push('> ' + message);
+  if (logs.length > 12) logs.shift();
+}
+
+function initializeParticles() {
+  particles = [];
+
+  for (let i = 0; i < 260; i++) {
+    particles.push({
+      x: random(),
+      y: random(),
+      size: random(2, 9),
+      life: random()
+    });
+  }
+}
+
+function drawFlowParticles() {
+  const t = millis() * 0.001 * speed;
+
+  noStroke();
+  fill(C.red);
+
+  // מסלולי זרימה
+  const paths = [
+    [[210, 240], [210, 275], [109, 275], [109, 315]],
+    [[210, 240], [210, 275], [311, 275], [311, 315]],
+    [[109, 420], [109, 465], [210, 465], [210, 510]],
+    [[311, 420], [311, 465], [210, 465], [210, 510]],
+    [[210, 625], [210, 705]]
+  ];
+
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i];
+
+    const points = [];
+
+    for (let j = 0; j < path.length - 1; j++) {
+      const a = path[j];
+      const b = path[j + 1];
+
+      const distance = dist(a[0], a[1], b[0], b[1]);
+      const steps = max(2, floor(distance / 5));
+
+      for (let k = 0; k < steps; k++) {
+        const f = k / steps;
+        points.push([
+          lerp(a[0], b[0], f),
+          lerp(a[1], b[1], f)
+        ]);
+      }
+    }
+
+    if (!points.length) continue;
+
+    const p = floor((t * 18 + i * 10) % points.length);
+    const point = points[p];
+
+    circle(point[0], point[1], 4);
+  }
+}
+
+</script>
+</body>
+</html>
